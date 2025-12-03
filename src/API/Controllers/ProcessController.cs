@@ -1,5 +1,5 @@
-using API.Models;
 using Batchanator.Core;
+using Batchanator.Core.Dtos;
 using Microsoft.AspNetCore.Mvc;
 
 namespace API.Controllers;

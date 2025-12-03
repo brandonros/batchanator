@@ -1,6 +1,7 @@
 using System.Net.Http.Json;
 using Batchanator.Core;
 using Batchanator.Core.Data;
+using Batchanator.Core.Dtos;
 using Batchanator.Core.Enums;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
@@ -159,6 +160,3 @@ public class DispatcherHostedService : BackgroundService
         await _reconciliationService.ReconcileBatchAsync(batchId, cancellationToken);
     }
 }
-
-internal record ProcessRequest(string JobType, string IdempotencyKey, string Payload);
-internal record ProcessResponse(bool Success, string? Error, string? Result);
