@@ -168,33 +168,37 @@ public class FileIngestionService
 
         await using var dbContext = await _dbContextFactory.CreateDbContextAsync(cancellationToken);
 
-        // Check idempotency for each item and filter out duplicates
+        // Batch check idempotency for all items (single query instead of N queries)
+        var allKeys = items.Select(i => i.idempotencyKey).ToList();
+        var existingItems = await dbContext.BatchItems
+            .Where(i => allKeys.Contains(i.IdempotencyKey))
+            .Select(i => new { i.IdempotencyKey, i.Status })
+            .ToDictionaryAsync(i => i.IdempotencyKey, i => i.Status, cancellationToken);
+
         var itemsToInsert = new List<BatchItem>();
         var skippedCount = 0;
 
         foreach (var (sourceRowId, idempotencyKey, payloadJson) in items)
         {
-            var check = await CheckIdempotencyAsync(dbContext, idempotencyKey, cancellationToken);
-
-            switch (check)
+            if (existingItems.TryGetValue(idempotencyKey, out var status))
             {
-                case IdempotencyCheckResult.AlreadySucceeded:
-                    _logger.LogDebug("Skipping row {Row}: idempotency key {Key} already succeeded",
-                        sourceRowId, idempotencyKey);
-                    skippedCount++;
-                    continue;
-
-                case IdempotencyCheckResult.DeadLettered:
-                    _logger.LogWarning("Skipping row {Row}: idempotency key {Key} previously dead-lettered",
-                        sourceRowId, idempotencyKey);
-                    skippedCount++;
-                    continue;
-
-                case IdempotencyCheckResult.InProgress:
-                    _logger.LogDebug("Skipping row {Row}: idempotency key {Key} already in progress",
-                        sourceRowId, idempotencyKey);
-                    skippedCount++;
-                    continue;
+                switch (status)
+                {
+                    case BatchItemStatus.Succeeded:
+                        _logger.LogDebug("Skipping row {Row}: idempotency key {Key} already succeeded",
+                            sourceRowId, idempotencyKey);
+                        break;
+                    case BatchItemStatus.DeadLetter:
+                        _logger.LogWarning("Skipping row {Row}: idempotency key {Key} previously dead-lettered",
+                            sourceRowId, idempotencyKey);
+                        break;
+                    default:
+                        _logger.LogDebug("Skipping row {Row}: idempotency key {Key} already in progress",
+                            sourceRowId, idempotencyKey);
+                        break;
+                }
+                skippedCount++;
+                continue;
             }
 
             itemsToInsert.Add(new BatchItem
@@ -233,7 +237,19 @@ public class FileIngestionService
         dbContext.Batches.Add(batch);
         dbContext.BatchItems.AddRange(itemsToInsert);
 
-        await dbContext.SaveChangesAsync(cancellationToken);
+        try
+        {
+            await dbContext.SaveChangesAsync(cancellationToken);
+        }
+        catch (DbUpdateException ex) when (IsUniqueConstraintViolation(ex))
+        {
+            // Race condition: another process inserted the same idempotency keys
+            // This is expected behavior under concurrent ingestion, not a failure
+            _logger.LogInformation(
+                "Batch {BatchId} had duplicate items detected at save time (concurrent ingestion race)",
+                batchId);
+            return;
+        }
 
         if (skippedCount > 0)
         {
@@ -289,34 +305,17 @@ public class FileIngestionService
         }
     }
 
-    private async Task<IdempotencyCheckResult> CheckIdempotencyAsync(
-        BatchanatorDbContext dbContext,
-        string idempotencyKey,
-        CancellationToken cancellationToken)
+    private static bool IsUniqueConstraintViolation(DbUpdateException ex)
     {
-        var existingStatus = await dbContext.BatchItems
-            .Where(i => i.IdempotencyKey == idempotencyKey)
-            .Select(i => (BatchItemStatus?)i.Status)
-            .FirstOrDefaultAsync(cancellationToken);
-
-        if (existingStatus == null)
+        // SQL Server: 2627 (unique constraint), 2601 (unique index)
+        // SQLite: error 19 (UNIQUE constraint failed)
+        return ex.InnerException switch
         {
-            return IdempotencyCheckResult.NotFound;
-        }
-
-        return existingStatus.Value switch
-        {
-            BatchItemStatus.Succeeded => IdempotencyCheckResult.AlreadySucceeded,
-            BatchItemStatus.DeadLetter => IdempotencyCheckResult.DeadLettered,
-            _ => IdempotencyCheckResult.InProgress
+            Microsoft.Data.SqlClient.SqlException sqlEx =>
+                sqlEx.Number == 2627 || sqlEx.Number == 2601,
+            Microsoft.Data.Sqlite.SqliteException sqliteEx =>
+                sqliteEx.SqliteErrorCode == 19,
+            _ => false
         };
-    }
-
-    private enum IdempotencyCheckResult
-    {
-        NotFound,
-        AlreadySucceeded,
-        DeadLettered,
-        InProgress
     }
 }
