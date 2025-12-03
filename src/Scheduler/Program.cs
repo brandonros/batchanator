@@ -33,11 +33,17 @@ builder.Services.AddHttpClient("BatchanatorApi", client =>
     client.Timeout = TimeSpan.FromSeconds(30);
 });
 
-// Services
+// Ingestion services
+builder.Services.AddScoped<BatchIngestionService>();
 builder.Services.AddScoped<FileIngestionService>();
+builder.Services.AddScoped<DatabaseIngestionService>();
+
+// Background services
 builder.Services.AddHostedService<DispatcherHostedService>();
 builder.Services.AddHostedService<CronSchedulerService>();
 
+// Controllers
+builder.Services.AddControllers();
 builder.Services.AddOpenApi();
 
 var app = builder.Build();
@@ -47,36 +53,6 @@ if (app.Environment.IsDevelopment())
     app.MapOpenApi();
 }
 
-// ============================================
-// Trigger Endpoint
-// ============================================
-app.MapPost("/jobs/{jobType}/trigger", async (
-    string jobType,
-    TriggerRequest request,
-    FileIngestionService ingestionService,
-    CancellationToken cancellationToken) =>
-{
-    if (string.IsNullOrWhiteSpace(request.FilePath))
-    {
-        return Results.BadRequest(new { error = "FilePath is required" });
-    }
-
-    if (!File.Exists(request.FilePath))
-    {
-        return Results.BadRequest(new { error = $"File not found: {request.FilePath}" });
-    }
-
-    var jobId = await ingestionService.IngestFileAsync(request.FilePath, jobType, cancellationToken);
-
-    return Results.Accepted($"/jobs/{jobId}", new TriggerResponse(jobId, jobType, "Processing"));
-})
-.WithName("TriggerJob")
-.WithOpenApi();
+app.MapControllers();
 
 app.Run();
-
-// ============================================
-// Request/Response Records
-// ============================================
-record TriggerRequest(string FilePath);
-record TriggerResponse(Guid JobId, string JobType, string Status);

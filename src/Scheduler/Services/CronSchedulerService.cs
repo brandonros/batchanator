@@ -69,6 +69,11 @@ public class CronSchedulerService : BackgroundService
                 Name: "ExpiredLockRelease",
                 CronExpression: "*/2 * * * *", // Every 2 minutes
                 Handler: ReleaseExpiredLocksAsync
+            ),
+            new ScheduledJob(
+                Name: "DatabaseIngestion",
+                CronExpression: "0 * * * *", // Every hour
+                Handler: IngestFromDatabaseAsync
             )
         ];
     }
@@ -272,6 +277,31 @@ public class CronSchedulerService : BackgroundService
         {
             await db.SaveChangesAsync(ct);
             _logger.LogInformation("Released {Count} expired locks", expiredItems.Count);
+        }
+    }
+
+    /// <summary>
+    /// Ingests pending work from the database for all registered job types.
+    /// </summary>
+    private async Task IngestFromDatabaseAsync(IServiceProvider services, CancellationToken ct)
+    {
+        using var scope = services.CreateScope();
+        var ingestionService = scope.ServiceProvider.GetRequiredService<DatabaseIngestionService>();
+
+        foreach (var jobType in JobTypeRegistry.SupportedJobTypes)
+        {
+            try
+            {
+                var jobId = await ingestionService.IngestPendingWorkAsync(jobType, ct);
+                if (jobId != null)
+                {
+                    _logger.LogInformation("Created job {JobId} from database for {JobType}", jobId, jobType);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to ingest pending work for job type {JobType}", jobType);
+            }
         }
     }
 }

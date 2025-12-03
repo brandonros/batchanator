@@ -14,6 +14,7 @@ public class BatchanatorDbContext : DbContext
     public DbSet<Job> Jobs => Set<Job>();
     public DbSet<Batch> Batches => Set<Batch>();
     public DbSet<BatchItem> BatchItems => Set<BatchItem>();
+    public DbSet<PendingWork> PendingWork => Set<PendingWork>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -71,6 +72,16 @@ public class BatchanatorDbContext : DbContext
             entity.HasIndex(e => e.BatchId);
             entity.HasIndex(e => new { e.Status, e.NextAttemptAt, e.LockedUntil })
                 .HasDatabaseName("IX_BatchItems_Claiming");
+        });
+
+        // PendingWork configuration
+        modelBuilder.Entity<PendingWork>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.JobType).HasMaxLength(100).IsRequired();
+            entity.Property(e => e.IdempotencyKey).HasMaxLength(500).IsRequired();
+
+            entity.HasIndex(e => e.JobType);
         });
     }
 }
