@@ -50,6 +50,9 @@ static IAsyncPolicy<HttpResponseMessage> GetTransientHttpPolicy()
             sleepDurationProvider: attempt => TimeSpan.FromMilliseconds(100 * Math.Pow(2, attempt)));
 }
 
+// Distributed locking
+builder.Services.AddSingleton<DistributedLockFactory>();
+
 // Ingestion services
 builder.Services.AddScoped<BatchIngestionService>();
 builder.Services.AddScoped<FileIngestionService>();

@@ -2,9 +2,6 @@ using Batchanator.Core;
 using Batchanator.Core.Data;
 using Batchanator.Core.Entities;
 using Batchanator.Core.Enums;
-using Medallion.Threading;
-using Medallion.Threading.FileSystem;
-using Medallion.Threading.SqlServer;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 
@@ -18,36 +15,19 @@ public class BatchIngestionService
 {
     private readonly IDbContextFactory<BatchanatorDbContext> _dbContextFactory;
     private readonly BatchanatorOptions _options;
+    private readonly DistributedLockFactory _lockFactory;
     private readonly ILogger<BatchIngestionService> _logger;
-    private readonly string? _connectionString;
-    private readonly DirectoryInfo? _lockDirectory;
 
     public BatchIngestionService(
         IDbContextFactory<BatchanatorDbContext> dbContextFactory,
         IOptions<BatchanatorOptions> options,
-        IConfiguration configuration,
+        DistributedLockFactory lockFactory,
         ILogger<BatchIngestionService> logger)
     {
         _dbContextFactory = dbContextFactory;
         _options = options.Value;
+        _lockFactory = lockFactory;
         _logger = logger;
-
-        if (_options.DatabaseProvider == DatabaseProvider.Sqlite)
-        {
-            var lockDir = string.IsNullOrWhiteSpace(_options.LockDirectory)
-                ? Path.Combine(Path.GetTempPath(), "batchanator-locks")
-                : _options.LockDirectory;
-            _lockDirectory = new DirectoryInfo(lockDir);
-            if (!_lockDirectory.Exists)
-            {
-                _lockDirectory.Create();
-            }
-            _logger.LogInformation("Using FileSystem locks at {LockDirectory}", _lockDirectory.FullName);
-        }
-        else
-        {
-            _connectionString = configuration.GetConnectionString("DefaultConnection")!;
-        }
     }
 
     /// <summary>
@@ -128,15 +108,6 @@ public class BatchIngestionService
         return jobId;
     }
 
-    private IDistributedLock CreateLock(string lockKey)
-    {
-        if (_options.DatabaseProvider == DatabaseProvider.Sqlite)
-        {
-            return new FileDistributedLock(_lockDirectory!, lockKey);
-        }
-        return new SqlDistributedLock(lockKey, _connectionString!);
-    }
-
     private async Task CreateBatchWithLockAsync(
         Guid jobId,
         int sequenceNumber,
@@ -144,7 +115,7 @@ public class BatchIngestionService
         CancellationToken cancellationToken)
     {
         var lockKey = $"ingest-{jobId}-chunk-{sequenceNumber}";
-        var @lock = CreateLock(lockKey);
+        var @lock = _lockFactory.Create(lockKey);
 
         await using var handle = await @lock.TryAcquireAsync(
             timeout: TimeSpan.FromSeconds(30),

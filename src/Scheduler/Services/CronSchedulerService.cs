@@ -2,9 +2,6 @@ using Batchanator.Core;
 using Batchanator.Core.Data;
 using Batchanator.Core.Enums;
 using Cronos;
-using Medallion.Threading;
-using Medallion.Threading.FileSystem;
-using Medallion.Threading.SqlServer;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 
@@ -18,39 +15,23 @@ public class CronSchedulerService : BackgroundService
 {
     private readonly IServiceProvider _serviceProvider;
     private readonly BatchanatorOptions _options;
+    private readonly DistributedLockFactory _lockFactory;
     private readonly ILogger<CronSchedulerService> _logger;
     private readonly string _workerId;
-    private readonly string? _connectionString;
-    private readonly DirectoryInfo? _lockDirectory;
 
     private readonly List<ScheduledJob> _scheduledJobs;
 
     public CronSchedulerService(
         IServiceProvider serviceProvider,
         IOptions<BatchanatorOptions> options,
-        IConfiguration configuration,
+        DistributedLockFactory lockFactory,
         ILogger<CronSchedulerService> logger)
     {
         _serviceProvider = serviceProvider;
         _options = options.Value;
+        _lockFactory = lockFactory;
         _logger = logger;
         _workerId = $"{Environment.MachineName}-{Environment.ProcessId}";
-
-        if (_options.DatabaseProvider == DatabaseProvider.Sqlite)
-        {
-            var lockDir = string.IsNullOrWhiteSpace(_options.LockDirectory)
-                ? Path.Combine(Path.GetTempPath(), "batchanator-locks")
-                : _options.LockDirectory;
-            _lockDirectory = new DirectoryInfo(lockDir);
-            if (!_lockDirectory.Exists)
-            {
-                _lockDirectory.Create();
-            }
-        }
-        else
-        {
-            _connectionString = configuration.GetConnectionString("DefaultConnection")!;
-        }
 
         // Build scheduled jobs from configuration
         _scheduledJobs = BuildScheduledJobs();
@@ -136,7 +117,7 @@ public class CronSchedulerService : BackgroundService
     private async Task TryExecuteJobAsync(ScheduledJob job, CancellationToken cancellationToken)
     {
         var lockKey = $"cron-{job.Name}";
-        var @lock = CreateLock(lockKey);
+        var @lock = _lockFactory.Create(lockKey);
 
         // Try to acquire lock with short timeout - if another pod has it, skip
         await using var handle = await @lock.TryAcquireAsync(
@@ -171,15 +152,6 @@ public class CronSchedulerService : BackgroundService
         {
             _logger.LogError(ex, "Job {JobName} failed", job.Name);
         }
-    }
-
-    private IDistributedLock CreateLock(string lockKey)
-    {
-        if (_options.DatabaseProvider == DatabaseProvider.Sqlite)
-        {
-            return new FileDistributedLock(_lockDirectory!, lockKey);
-        }
-        return new SqlDistributedLock(lockKey, _connectionString!);
     }
 
     // ============================================
