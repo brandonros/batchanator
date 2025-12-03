@@ -1,0 +1,10 @@
+{"idempotency_key": "email-alice-welcome-001", "to": "alice@example.com", "subject": "Welcome to our platform!", "body": "Thank you for signing up.", "templateId": "welcome-email"}
+{"idempotency_key": "email-bob-order-shipped-12345", "to": "bob@example.com", "subject": "Your order has shipped", "body": "Your order #12345 is on its way.", "templateId": "order-shipped", "templateVariables": {"orderNumber": "12345", "trackingUrl": "https://track.example.com/12345"}}
+{"idempotency_key": "email-charlie-password-reset-001", "to": "charlie@example.com", "subject": "Password reset request", "body": "Click here to reset your password.", "templateId": "password-reset"}
+{"idempotency_key": "email-diana-invoice-2024-001", "to": "diana@example.com", "subject": "Invoice #2024-001", "body": "Please find your invoice attached.", "templateId": "invoice"}
+{"idempotency_key": "email-eve-newsletter-2024-w01", "to": "eve@example.com", "subject": "Weekly newsletter", "body": "Here's what's new this week...", "templateId": "newsletter"}
+{"idempotency_key": "email-frank-subscription-expiring-001", "to": "frank@example.com", "subject": "Your subscription is expiring", "body": "Renew now to keep your access.", "templateId": "subscription-expiring"}
+{"idempotency_key": "email-grace-new-comment-post-123", "to": "grace@example.com", "subject": "New comment on your post", "body": "Someone commented on your recent post.", "templateId": "new-comment"}
+{"idempotency_key": "email-henry-meeting-reminder-2024-01-15", "to": "henry@example.com", "subject": "Meeting reminder", "body": "Your meeting starts in 1 hour.", "templateId": "meeting-reminder"}
+{"idempotency_key": "email-iris-verify-email-001", "to": "iris@example.com", "subject": "Account verification", "body": "Please verify your email address.", "templateId": "verify-email"}
+{"idempotency_key": "email-jack-promo-save20-2024", "to": "jack@example.com", "subject": "Special offer just for you", "body": "Get 20% off your next purchase.", "templateId": "promo-offer", "templateVariables": {"discountCode": "SAVE20", "expiresAt": "2024-12-31"}}
