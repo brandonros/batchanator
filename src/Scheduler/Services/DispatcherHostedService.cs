@@ -144,26 +144,7 @@ public class DispatcherHostedService : BackgroundService
             .AsNoTracking()
             .ToListAsync(cancellationToken);
 
-        if (items.Count == 0)
-        {
-            return [];
-        }
-
-        // Get job types for all batches involved
-        var batchIds = items.Select(i => i.BatchId).Distinct().ToList();
-        var batchJobTypes = await dbContext.Batches
-            .Where(b => batchIds.Contains(b.Id))
-            .Include(b => b.Job)
-            .ToDictionaryAsync(b => b.Id, b => b.Job.JobType, cancellationToken);
-
-        // Map to work items with job type
-        return items.Select(item => new WorkItem(
-            item.Id,
-            item.BatchId,
-            item.IdempotencyKey,
-            item.PayloadJson,
-            batchJobTypes.GetValueOrDefault(item.BatchId, "unknown")
-        )).ToList();
+        return await MapClaimedItemsToWorkItems(dbContext, items, cancellationToken);
     }
 
     private async Task<List<WorkItem>> ClaimItemsSqlServerAsync(CancellationToken cancellationToken)
@@ -198,19 +179,23 @@ public class DispatcherHostedService : BackgroundService
             .AsNoTracking()
             .ToListAsync(cancellationToken);
 
-        if (items.Count == 0)
-        {
-            return [];
-        }
+        return await MapClaimedItemsToWorkItems(dbContext, items, cancellationToken);
+    }
 
-        // Get job types for all batches involved
+    private async Task<List<WorkItem>> MapClaimedItemsToWorkItems(
+        BatchanatorDbContext dbContext,
+        List<BatchItem> items,
+        CancellationToken cancellationToken)
+    {
+        if (items.Count == 0)
+            return [];
+
         var batchIds = items.Select(i => i.BatchId).Distinct().ToList();
         var batchJobTypes = await dbContext.Batches
             .Where(b => batchIds.Contains(b.Id))
             .Include(b => b.Job)
             .ToDictionaryAsync(b => b.Id, b => b.Job.JobType, cancellationToken);
 
-        // Map to work items with job type
         return items.Select(item => new WorkItem(
             item.Id,
             item.BatchId,
