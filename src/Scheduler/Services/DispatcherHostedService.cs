@@ -114,16 +114,8 @@ public class DispatcherHostedService : BackgroundService
         var now = DateTime.UtcNow;
         var lockedUntil = now.AddMinutes(lockTimeout);
 
-        // Generate a unique claim token for this claim operation
+        // Atomic UPDATE-then-SELECT to prevent race conditions
         var claimToken = $"{_workerId}-{Guid.NewGuid():N}";
-
-        // SQLite fix: Use atomic UPDATE-then-SELECT to prevent race conditions.
-        // A single UPDATE statement is atomic in SQLite, so we:
-        // 1. UPDATE rows that match our criteria, setting LockedBy to our unique claim token
-        // 2. SELECT only the rows we actually claimed (where LockedBy = our token)
-        //
-        // This prevents two workers from claiming the same items because the UPDATE
-        // includes the original conditions in its WHERE clause.
 
         var updateSql = @"
             UPDATE BatchItems

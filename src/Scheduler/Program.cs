@@ -3,6 +3,7 @@ using Batchanator.Core.Data;
 using Microsoft.EntityFrameworkCore;
 using Polly;
 using Polly.Extensions.Http;
+using Scheduler.Handlers;
 using Scheduler.Services;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -57,6 +58,23 @@ builder.Services.AddSingleton<DistributedLockFactory>();
 builder.Services.AddScoped<BatchIngestionService>();
 builder.Services.AddScoped<FileIngestionService>();
 builder.Services.AddScoped<DatabaseIngestionService>();
+
+// Scheduled job handlers
+builder.Services.AddSingleton<IScheduledJobHandler, StaleJobCleanupHandler>();
+builder.Services.AddSingleton<IScheduledJobHandler, DeadLetterRetryHandler>();
+builder.Services.AddSingleton<IScheduledJobHandler, ExpiredLockReleaseHandler>();
+
+foreach (var job in batchanatorConfig.ScheduledIngestionJobs.Where(j => j.Enabled))
+{
+    var jobType = job.JobType;
+    var cronExpression = job.CronExpression;
+    builder.Services.AddSingleton<IScheduledJobHandler>(sp =>
+        new DatabaseIngestionHandler(
+            sp,
+            sp.GetRequiredService<ILogger<DatabaseIngestionHandler>>(),
+            jobType,
+            cronExpression));
+}
 
 // Background services
 builder.Services.AddHostedService<DispatcherHostedService>();
