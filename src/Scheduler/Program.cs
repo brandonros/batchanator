@@ -76,6 +76,10 @@ foreach (var job in batchanatorConfig.ScheduledIngestionJobs.Where(j => j.Enable
             cronExpression));
 }
 
+// Dispatcher services
+builder.Services.AddSingleton<WorkClaimingService>();
+builder.Services.AddSingleton<ReconciliationService>();
+
 // Background services
 builder.Services.AddHostedService<DispatcherHostedService>();
 builder.Services.AddHostedService<CronSchedulerService>();

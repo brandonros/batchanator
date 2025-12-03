@@ -8,7 +8,7 @@ A .NET batch-processing framework with idempotent execution, distributed locking
 ┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
 │   Ingestion     │     │    Scheduler    │     │      API        │
 │                 │     │                 │     │                 │
-│  • File         │────▶│  • Dispatcher   │────▶│  • /process    │
+│  • File         │────▶│  • Dispatcher   │────▶│  • /process     │
 │  • Database     │     │  • Cron jobs    │     │  • Job handlers │
 │  • Direct API   │     │  • Lock release │     │                 │
 └─────────────────┘     └─────────────────┘     └─────────────────┘

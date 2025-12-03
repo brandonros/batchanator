@@ -1,7 +1,6 @@
 using System.Net.Http.Json;
 using Batchanator.Core;
 using Batchanator.Core.Data;
-using Batchanator.Core.Entities;
 using Batchanator.Core.Enums;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
@@ -10,6 +9,8 @@ namespace Scheduler.Services;
 
 public class DispatcherHostedService : BackgroundService
 {
+    private readonly WorkClaimingService _claimingService;
+    private readonly ReconciliationService _reconciliationService;
     private readonly IDbContextFactory<BatchanatorDbContext> _dbContextFactory;
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly IOptions<BatchanatorOptions> _options;
@@ -17,11 +18,15 @@ public class DispatcherHostedService : BackgroundService
     private readonly string _workerId;
 
     public DispatcherHostedService(
+        WorkClaimingService claimingService,
+        ReconciliationService reconciliationService,
         IDbContextFactory<BatchanatorDbContext> dbContextFactory,
         IHttpClientFactory httpClientFactory,
         IOptions<BatchanatorOptions> options,
         ILogger<DispatcherHostedService> logger)
     {
+        _claimingService = claimingService;
+        _reconciliationService = reconciliationService;
         _dbContextFactory = dbContextFactory;
         _httpClientFactory = httpClientFactory;
         _options = options;
@@ -41,7 +46,6 @@ public class DispatcherHostedService : BackgroundService
 
                 if (processedCount == 0)
                 {
-                    // No work to do, wait before polling again
                     await Task.Delay(
                         TimeSpan.FromSeconds(_options.Value.PollingIntervalSeconds),
                         stoppingToken);
@@ -63,7 +67,7 @@ public class DispatcherHostedService : BackgroundService
 
     private async Task<int> ProcessBatchAsync(CancellationToken cancellationToken)
     {
-        var workItems = await ClaimItemsAsync(cancellationToken);
+        var workItems = await _claimingService.ClaimItemsAsync(cancellationToken);
 
         if (workItems.Count == 0)
         {
@@ -91,118 +95,6 @@ public class DispatcherHostedService : BackgroundService
         await Task.WhenAll(tasks);
 
         return workItems.Count;
-    }
-
-    private async Task<List<WorkItem>> ClaimItemsAsync(CancellationToken cancellationToken)
-    {
-        var options = _options.Value;
-
-        if (options.DatabaseProvider == DatabaseProvider.Sqlite)
-        {
-            return await ClaimItemsSqliteAsync(cancellationToken);
-        }
-
-        return await ClaimItemsSqlServerAsync(cancellationToken);
-    }
-
-    private async Task<List<WorkItem>> ClaimItemsSqliteAsync(CancellationToken cancellationToken)
-    {
-        await using var dbContext = await _dbContextFactory.CreateDbContextAsync(cancellationToken);
-
-        var batchSize = _options.Value.ProcessingBatchSize;
-        var lockTimeout = _options.Value.LockTimeoutMinutes;
-        var now = DateTime.UtcNow;
-        var lockedUntil = now.AddMinutes(lockTimeout);
-
-        // Atomic UPDATE-then-SELECT to prevent race conditions
-        var claimToken = $"{_workerId}-{Guid.NewGuid():N}";
-
-        var updateSql = @"
-            UPDATE BatchItems
-            SET Status = 'Processing',
-                LockedBy = @claimToken,
-                LockedUntil = @lockedUntil,
-                UpdatedAt = @now
-            WHERE Id IN (
-                SELECT Id FROM BatchItems
-                WHERE (Status = 'Pending' OR (Status = 'Failed' AND NextAttemptAt <= @now))
-                  AND (LockedUntil IS NULL OR LockedUntil < @now)
-                ORDER BY CreatedAt
-                LIMIT @batchSize
-            )";
-
-        await dbContext.Database.ExecuteSqlRawAsync(
-            updateSql,
-            new Microsoft.Data.Sqlite.SqliteParameter("@claimToken", claimToken),
-            new Microsoft.Data.Sqlite.SqliteParameter("@lockedUntil", lockedUntil),
-            new Microsoft.Data.Sqlite.SqliteParameter("@now", now),
-            new Microsoft.Data.Sqlite.SqliteParameter("@batchSize", batchSize));
-
-        // Now fetch only the items we successfully claimed
-        var items = await dbContext.BatchItems
-            .Where(i => i.LockedBy == claimToken)
-            .AsNoTracking()
-            .ToListAsync(cancellationToken);
-
-        return await MapClaimedItemsToWorkItems(dbContext, items, cancellationToken);
-    }
-
-    private async Task<List<WorkItem>> ClaimItemsSqlServerAsync(CancellationToken cancellationToken)
-    {
-        await using var dbContext = await _dbContextFactory.CreateDbContextAsync(cancellationToken);
-
-        var batchSize = _options.Value.ProcessingBatchSize;
-        var lockTimeout = _options.Value.LockTimeoutMinutes;
-        var now = DateTime.UtcNow;
-
-        // Use raw SQL for the claim operation with proper locking hints
-        var sql = $@"
-            WITH cte AS (
-                SELECT TOP ({batchSize}) *
-                FROM BatchItems WITH (UPDLOCK, READPAST, ROWLOCK)
-                WHERE (Status = 'Pending' OR (Status = 'Failed' AND NextAttemptAt <= @now))
-                  AND (LockedUntil IS NULL OR LockedUntil < @now)
-                ORDER BY CreatedAt
-            )
-            UPDATE cte
-            SET Status = 'Processing',
-                LockedBy = @workerId,
-                LockedUntil = DATEADD(MINUTE, {lockTimeout}, @now),
-                UpdatedAt = @now
-            OUTPUT inserted.*;
-        ";
-
-        var items = await dbContext.BatchItems
-            .FromSqlRaw(sql,
-                new Microsoft.Data.SqlClient.SqlParameter("@now", now),
-                new Microsoft.Data.SqlClient.SqlParameter("@workerId", _workerId))
-            .AsNoTracking()
-            .ToListAsync(cancellationToken);
-
-        return await MapClaimedItemsToWorkItems(dbContext, items, cancellationToken);
-    }
-
-    private async Task<List<WorkItem>> MapClaimedItemsToWorkItems(
-        BatchanatorDbContext dbContext,
-        List<BatchItem> items,
-        CancellationToken cancellationToken)
-    {
-        if (items.Count == 0)
-            return [];
-
-        var batchIds = items.Select(i => i.BatchId).Distinct().ToList();
-        var batchJobTypes = await dbContext.Batches
-            .Where(b => batchIds.Contains(b.Id))
-            .Include(b => b.Job)
-            .ToDictionaryAsync(b => b.Id, b => b.Job.JobType, cancellationToken);
-
-        return items.Select(item => new WorkItem(
-            item.Id,
-            item.BatchId,
-            item.IdempotencyKey,
-            item.PayloadJson,
-            batchJobTypes.GetValueOrDefault(item.BatchId, "unknown")
-        )).ToList();
     }
 
     private async Task ProcessItemAsync(WorkItem workItem, CancellationToken cancellationToken)
@@ -253,7 +145,6 @@ public class DispatcherHostedService : BackgroundService
             else
             {
                 item.Status = BatchItemStatus.Failed;
-                // Exponential backoff: 2^attemptCount seconds
                 var backoffSeconds = Math.Pow(2, item.AttemptCount);
                 item.NextAttemptAt = now.AddSeconds(backoffSeconds);
             }
@@ -265,89 +156,9 @@ public class DispatcherHostedService : BackgroundService
 
         await dbContext.SaveChangesAsync(cancellationToken);
 
-        // Trigger reconciliation check for the batch
-        await ReconcileBatchAsync(batchId, cancellationToken);
-    }
-
-    private async Task ReconcileBatchAsync(Guid batchId, CancellationToken cancellationToken)
-    {
-        await using var dbContext = await _dbContextFactory.CreateDbContextAsync(cancellationToken);
-
-        var batch = await dbContext.Batches
-            .Include(b => b.Job)
-            .FirstOrDefaultAsync(b => b.Id == batchId, cancellationToken);
-
-        if (batch == null) return;
-
-        // Count items by status
-        var statusCounts = await dbContext.BatchItems
-            .Where(i => i.BatchId == batchId)
-            .GroupBy(i => i.Status)
-            .Select(g => new { Status = g.Key, Count = g.Count() })
-            .ToListAsync(cancellationToken);
-
-        var succeeded = statusCounts.FirstOrDefault(x => x.Status == BatchItemStatus.Succeeded)?.Count ?? 0;
-        var failed = statusCounts.FirstOrDefault(x => x.Status == BatchItemStatus.DeadLetter)?.Count ?? 0;
-        var pending = statusCounts.FirstOrDefault(x => x.Status == BatchItemStatus.Pending)?.Count ?? 0;
-        var processing = statusCounts.FirstOrDefault(x => x.Status == BatchItemStatus.Processing)?.Count ?? 0;
-        var retrying = statusCounts.FirstOrDefault(x => x.Status == BatchItemStatus.Failed)?.Count ?? 0;
-
-        batch.SucceededItems = succeeded;
-        batch.FailedItems = failed;
-
-        var now = DateTime.UtcNow;
-
-        // Check if batch is complete (all items are in terminal state)
-        if (pending == 0 && processing == 0 && retrying == 0)
-        {
-            batch.Status = failed > 0 ? BatchStatus.Failed : BatchStatus.Completed;
-            batch.CompletedAt = now;
-
-            _logger.LogInformation("Batch {BatchId} completed. Succeeded: {Succeeded}, Failed: {Failed}",
-                batchId, succeeded, failed);
-
-            // Check if job is complete
-            await ReconcileJobAsync(batch.JobId, cancellationToken);
-        }
-        else
-        {
-            batch.Status = BatchStatus.Processing;
-        }
-
-        await dbContext.SaveChangesAsync(cancellationToken);
-    }
-
-    private async Task ReconcileJobAsync(Guid jobId, CancellationToken cancellationToken)
-    {
-        await using var dbContext = await _dbContextFactory.CreateDbContextAsync(cancellationToken);
-
-        var job = await dbContext.Jobs.FindAsync([jobId], cancellationToken);
-        if (job == null) return;
-
-        var batchStatuses = await dbContext.Batches
-            .Where(b => b.JobId == jobId)
-            .Select(b => b.Status)
-            .ToListAsync(cancellationToken);
-
-        var completedBatches = batchStatuses.Count(s => s == BatchStatus.Completed || s == BatchStatus.Failed);
-        var allComplete = batchStatuses.All(s => s == BatchStatus.Completed || s == BatchStatus.Failed);
-        var anyFailed = batchStatuses.Any(s => s == BatchStatus.Failed);
-
-        job.CompletedBatches = completedBatches;
-
-        if (allComplete)
-        {
-            job.Status = anyFailed ? JobStatus.PartiallyCompleted : JobStatus.Completed;
-            job.CompletedAt = DateTime.UtcNow;
-
-            _logger.LogInformation("Job {JobId} completed with status {Status}", jobId, job.Status);
-        }
-
-        await dbContext.SaveChangesAsync(cancellationToken);
+        await _reconciliationService.ReconcileBatchAsync(batchId, cancellationToken);
     }
 }
 
-// Internal records for dispatcher
-internal record WorkItem(Guid ItemId, Guid BatchId, string IdempotencyKey, string PayloadJson, string JobType);
 internal record ProcessRequest(string JobType, string IdempotencyKey, string Payload);
 internal record ProcessResponse(bool Success, string? Error, string? Result);
