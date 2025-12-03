@@ -33,6 +33,7 @@ A .NET batch-processing framework with idempotent execution, distributed locking
 | **Worker claiming** | Row-level locking with `UPDLOCK, READPAST` (SQL Server) or optimistic locking (SQLite). |
 | **Stale lock recovery** | Cron job releases expired locks every 2 minutes. |
 | **Transient fault handling** | Polly retry for HTTP (3 retries, exponential backoff). EF Core retry for SQL Server transient errors. |
+| **Schema management** | EF Core migrations. Database created/updated automatically on startup. |
 
 ## Ingestion Methods
 

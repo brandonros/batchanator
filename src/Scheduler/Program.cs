@@ -68,6 +68,14 @@ builder.Services.AddOpenApi();
 
 var app = builder.Build();
 
+// Apply migrations on startup
+using (var scope = app.Services.CreateScope())
+{
+    var factory = scope.ServiceProvider.GetRequiredService<IDbContextFactory<BatchanatorDbContext>>();
+    using var db = factory.CreateDbContext();
+    db.Database.Migrate();
+}
+
 if (app.Environment.IsDevelopment())
 {
     app.MapOpenApi();
