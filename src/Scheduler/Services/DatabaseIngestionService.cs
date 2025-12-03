@@ -51,7 +51,7 @@ public class DatabaseIngestionService
             "Found {Count} pending work items for job type {JobType}, starting ingestion",
             pendingIds.Count, jobType);
 
-        var items = QueryPendingWorkItems(jobType, cancellationToken);
+        var items = QueryPendingWorkItems(jobType, pendingIds, cancellationToken);
 
         var jobId = await _batchIngestion.IngestAsync(
             jobName: $"{jobType}-{DateTime.UtcNow:yyyyMMdd-HHmmss}",
@@ -73,13 +73,15 @@ public class DatabaseIngestionService
 
     private async IAsyncEnumerable<RawWorkItem> QueryPendingWorkItems(
         string jobType,
+        List<Guid> pendingIds,
         [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
     {
         await using var dbContext = await _dbContextFactory.CreateDbContextAsync(cancellationToken);
 
-        // Stream items from database
+        // Stream items from database - filter by snapshot IDs to avoid race condition
+        // where new rows inserted after snapshot would be ingested but not deleted
         var pendingItems = dbContext.PendingWork
-            .Where(p => p.JobType == jobType)
+            .Where(p => pendingIds.Contains(p.Id))
             .OrderBy(p => p.CreatedAt)
             .AsAsyncEnumerable();
 
