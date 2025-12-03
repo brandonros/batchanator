@@ -52,43 +52,44 @@ public class CronSchedulerService : BackgroundService
             _connectionString = configuration.GetConnectionString("DefaultConnection")!;
         }
 
-        // Define scheduled jobs
-        _scheduledJobs =
-        [
-            // Maintenance jobs
-            new ScheduledJob(
+        // Build scheduled jobs from configuration
+        _scheduledJobs = BuildScheduledJobs();
+    }
+
+    private List<ScheduledJob> BuildScheduledJobs()
+    {
+        var jobs = new List<ScheduledJob>
+        {
+            // Maintenance jobs (schedules from configuration with defaults)
+            new(
                 Name: "StaleJobCleanup",
-                CronExpression: "*/5 * * * *", // Every 5 minutes
+                CronExpression: _options.Maintenance.StaleJobCleanup,
                 Handler: CleanupStaleJobsAsync
             ),
-            new ScheduledJob(
+            new(
                 Name: "DeadLetterRetry",
-                CronExpression: "0 */1 * * *", // Every hour
+                CronExpression: _options.Maintenance.DeadLetterRetry,
                 Handler: RetryDeadLetterItemsAsync
             ),
-            new ScheduledJob(
+            new(
                 Name: "ExpiredLockRelease",
-                CronExpression: "*/2 * * * *", // Every 2 minutes
+                CronExpression: _options.Maintenance.ExpiredLockRelease,
                 Handler: ReleaseExpiredLocksAsync
-            ),
-
-            // Database ingestion jobs (one per job type, each with own lock and schedule)
-            new ScheduledJob(
-                Name: "DatabaseIngestion-email-notification",
-                CronExpression: "0 * * * *", // Every hour
-                Handler: (sp, ct) => IngestJobTypeAsync(sp, "email-notification", ct)
-            ),
-            new ScheduledJob(
-                Name: "DatabaseIngestion-data-sync",
-                CronExpression: "0 * * * *", // Every hour
-                Handler: (sp, ct) => IngestJobTypeAsync(sp, "data-sync", ct)
-            ),
-            new ScheduledJob(
-                Name: "DatabaseIngestion-report-generation",
-                CronExpression: "0 * * * *", // Every hour
-                Handler: (sp, ct) => IngestJobTypeAsync(sp, "report-generation", ct)
             )
-        ];
+        };
+
+        // Add database ingestion jobs from configuration
+        foreach (var ingestionJob in _options.ScheduledIngestionJobs.Where(j => j.Enabled))
+        {
+            var jobType = ingestionJob.JobType;
+            jobs.Add(new ScheduledJob(
+                Name: $"DatabaseIngestion-{jobType}",
+                CronExpression: ingestionJob.CronExpression,
+                Handler: (sp, ct) => IngestJobTypeAsync(sp, jobType, ct)
+            ));
+        }
+
+        return jobs;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)

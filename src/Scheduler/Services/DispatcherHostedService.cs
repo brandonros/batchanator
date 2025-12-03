@@ -112,32 +112,50 @@ public class DispatcherHostedService : BackgroundService
         var batchSize = _options.Value.ProcessingBatchSize;
         var lockTimeout = _options.Value.LockTimeoutMinutes;
         var now = DateTime.UtcNow;
+        var lockedUntil = now.AddMinutes(lockTimeout);
 
-        // For SQLite: use simple EF queries (SQLite doesn't support row-level locking hints)
+        // Generate a unique claim token for this claim operation
+        var claimToken = $"{_workerId}-{Guid.NewGuid():N}";
+
+        // SQLite fix: Use atomic UPDATE-then-SELECT to prevent race conditions.
+        // A single UPDATE statement is atomic in SQLite, so we:
+        // 1. UPDATE rows that match our criteria, setting LockedBy to our unique claim token
+        // 2. SELECT only the rows we actually claimed (where LockedBy = our token)
+        //
+        // This prevents two workers from claiming the same items because the UPDATE
+        // includes the original conditions in its WHERE clause.
+
+        var updateSql = @"
+            UPDATE BatchItems
+            SET Status = 'Processing',
+                LockedBy = @claimToken,
+                LockedUntil = @lockedUntil,
+                UpdatedAt = @now
+            WHERE Id IN (
+                SELECT Id FROM BatchItems
+                WHERE (Status = 'Pending' OR (Status = 'Failed' AND NextAttemptAt <= @now))
+                  AND (LockedUntil IS NULL OR LockedUntil < @now)
+                ORDER BY CreatedAt
+                LIMIT @batchSize
+            )";
+
+        await dbContext.Database.ExecuteSqlRawAsync(
+            updateSql,
+            new Microsoft.Data.Sqlite.SqliteParameter("@claimToken", claimToken),
+            new Microsoft.Data.Sqlite.SqliteParameter("@lockedUntil", lockedUntil),
+            new Microsoft.Data.Sqlite.SqliteParameter("@now", now),
+            new Microsoft.Data.Sqlite.SqliteParameter("@batchSize", batchSize));
+
+        // Now fetch only the items we successfully claimed
         var items = await dbContext.BatchItems
-            .Where(i =>
-                (i.Status == BatchItemStatus.Pending ||
-                 (i.Status == BatchItemStatus.Failed && i.NextAttemptAt <= now)) &&
-                (i.LockedUntil == null || i.LockedUntil < now))
-            .OrderBy(i => i.CreatedAt)
-            .Take(batchSize)
+            .Where(i => i.LockedBy == claimToken)
+            .AsNoTracking()
             .ToListAsync(cancellationToken);
 
         if (items.Count == 0)
         {
             return [];
         }
-
-        // Update items to mark them as processing
-        foreach (var item in items)
-        {
-            item.Status = BatchItemStatus.Processing;
-            item.LockedBy = _workerId;
-            item.LockedUntil = now.AddMinutes(lockTimeout);
-            item.UpdatedAt = now;
-        }
-
-        await dbContext.SaveChangesAsync(cancellationToken);
 
         // Get job types for all batches involved
         var batchIds = items.Select(i => i.BatchId).Distinct().ToList();
