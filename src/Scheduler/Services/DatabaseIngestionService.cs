@@ -26,32 +26,49 @@ public class DatabaseIngestionService
 
     /// <summary>
     /// Ingests all pending work items for a specific job type.
+    /// Deletes processed rows after successful ingestion.
     /// Returns null if no work was found.
     /// </summary>
     public async Task<Guid?> IngestPendingWorkAsync(
         string jobType,
         CancellationToken cancellationToken = default)
     {
-        // Check if there's any work to do first
-        await using var checkContext = await _dbContextFactory.CreateDbContextAsync(cancellationToken);
-        var hasWork = await checkContext.PendingWork
-            .AnyAsync(p => p.JobType == jobType, cancellationToken);
+        await using var dbContext = await _dbContextFactory.CreateDbContextAsync(cancellationToken);
 
-        if (!hasWork)
+        // Collect IDs to delete after ingestion (snapshot before streaming)
+        var pendingIds = await dbContext.PendingWork
+            .Where(p => p.JobType == jobType)
+            .Select(p => p.Id)
+            .ToListAsync(cancellationToken);
+
+        if (pendingIds.Count == 0)
         {
             _logger.LogDebug("No pending work found for job type {JobType}", jobType);
             return null;
         }
 
-        _logger.LogInformation("Found pending work for job type {JobType}, starting ingestion", jobType);
+        _logger.LogInformation(
+            "Found {Count} pending work items for job type {JobType}, starting ingestion",
+            pendingIds.Count, jobType);
 
         var items = QueryPendingWorkItems(jobType, cancellationToken);
 
-        return await _batchIngestion.IngestAsync(
+        var jobId = await _batchIngestion.IngestAsync(
             jobName: $"{jobType}-{DateTime.UtcNow:yyyyMMdd-HHmmss}",
             jobType: jobType,
             items: items,
             cancellationToken: cancellationToken);
+
+        // Delete processed rows after successful ingestion
+        var deletedCount = await dbContext.PendingWork
+            .Where(p => pendingIds.Contains(p.Id))
+            .ExecuteDeleteAsync(cancellationToken);
+
+        _logger.LogInformation(
+            "Deleted {DeletedCount} pending work rows for job {JobId}",
+            deletedCount, jobId);
+
+        return jobId;
     }
 
     private async IAsyncEnumerable<RawWorkItem> QueryPendingWorkItems(
@@ -68,7 +85,7 @@ public class DatabaseIngestionService
 
         await foreach (var item in pendingItems.WithCancellation(cancellationToken))
         {
-            // Idempotency key is already namespaced with jobType in PendingWork
+            // PendingWork stores raw key; namespace with jobType to match BatchItems format
             var idempotencyKey = $"{jobType}:{item.IdempotencyKey}";
 
             yield return new RawWorkItem(

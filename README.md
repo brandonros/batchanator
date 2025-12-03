@@ -15,11 +15,11 @@ A .NET batch-processing framework with idempotent execution, distributed locking
          │                      │                       │
          └──────────────────────┴───────────────────────┘
                                 │
-                    ┌───────────▼───────────┐
-                    │   SQL Server / SQLite │
-                    │                       │
+                    ┌───────────▼─────────────┐
+                    │   SQL Server / SQLite   │
+                    │                         │
                     │  Jobs → Batches → Items │
-                    └───────────────────────┘
+                    └─────────────────────────┘
 ```
 
 ## Key Features
@@ -32,6 +32,7 @@ A .NET batch-processing framework with idempotent execution, distributed locking
 | **Chunked ingestion** | Large files/datasets split into batches. Configurable chunk size. |
 | **Worker claiming** | Row-level locking with `UPDLOCK, READPAST` (SQL Server) or optimistic locking (SQLite). |
 | **Stale lock recovery** | Cron job releases expired locks every 2 minutes. |
+| **Transient fault handling** | Polly retry for HTTP (3 retries, exponential backoff). EF Core retry for SQL Server transient errors. |
 
 ## Ingestion Methods
 

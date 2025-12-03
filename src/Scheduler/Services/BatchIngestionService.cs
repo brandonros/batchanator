@@ -115,7 +115,8 @@ public class BatchIngestionService
             var job = await dbContext.Jobs.FindAsync([jobId], cancellationToken);
             if (job != null)
             {
-                job.TotalBatches = chunkNumber;
+                // Query actual batch count (may differ from chunkNumber if batches were skipped)
+                job.TotalBatches = await dbContext.Batches.CountAsync(b => b.JobId == jobId, cancellationToken);
                 job.Status = JobStatus.Processing;
                 await dbContext.SaveChangesAsync(cancellationToken);
             }

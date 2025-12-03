@@ -216,7 +216,6 @@ public class DispatcherHostedService : BackgroundService
         {
             var client = _httpClientFactory.CreateClient("BatchanatorApi");
             var request = new ProcessRequest(workItem.JobType, workItem.IdempotencyKey, workItem.PayloadJson);
-
             var response = await client.PostAsJsonAsync("/process", request, cancellationToken);
             var result = await response.Content.ReadFromJsonAsync<ProcessResponse>(cancellationToken);
 
