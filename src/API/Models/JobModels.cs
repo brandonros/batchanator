@@ -42,3 +42,17 @@ public record BatchItemSummary(
     string? LastError,
     DateTime CreatedAt,
     DateTime? UpdatedAt);
+
+// Job cancellation
+public record CancelResponse(int CancelledCount);
+
+// Dead letter management
+public record DeadLetterItem(
+    Guid Id,
+    string IdempotencyKey,
+    string? LastError,
+    int AttemptCount,
+    DateTime? UpdatedAt);
+
+public record ReplayResponse(int ReplayedCount);
+public record PurgeResponse(int PurgedCount);

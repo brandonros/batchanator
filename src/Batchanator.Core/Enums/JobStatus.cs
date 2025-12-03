@@ -6,5 +6,6 @@ public enum JobStatus
     Processing,
     Completed,
     PartiallyCompleted,
-    Failed
+    Failed,
+    Cancelled
 }

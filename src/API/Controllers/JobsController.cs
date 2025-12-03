@@ -1,5 +1,6 @@
 using API.Models;
 using Batchanator.Core.Data;
+using Batchanator.Core.Enums;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 
@@ -107,5 +108,72 @@ public class JobsController : ControllerBase
             .ToListAsync(cancellationToken);
 
         return Ok(items);
+    }
+
+    [HttpPost("{id:guid}/cancel")]
+    public async Task<ActionResult<CancelResponse>> CancelJob(Guid id, CancellationToken cancellationToken)
+    {
+        // Cancel all non-terminal items (Pending, Failed, Processing)
+        var cancelledCount = await _db.BatchItems
+            .Where(i => i.Batch.JobId == id &&
+                        (i.Status == BatchItemStatus.Pending ||
+                         i.Status == BatchItemStatus.Failed ||
+                         i.Status == BatchItemStatus.Processing))
+            .ExecuteUpdateAsync(s => s
+                .SetProperty(i => i.Status, BatchItemStatus.Cancelled)
+                .SetProperty(i => i.UpdatedAt, DateTime.UtcNow)
+                .SetProperty(i => i.LockedBy, (string?)null)
+                .SetProperty(i => i.LockedUntil, (DateTime?)null), cancellationToken);
+
+        // Update job status
+        var job = await _db.Jobs.FindAsync([id], cancellationToken);
+        if (job != null)
+        {
+            job.Status = JobStatus.Cancelled;
+            job.CompletedAt = DateTime.UtcNow;
+            await _db.SaveChangesAsync(cancellationToken);
+        }
+
+        return Ok(new CancelResponse(cancelledCount));
+    }
+
+    [HttpGet("{id:guid}/dead-letter")]
+    public async Task<ActionResult<List<DeadLetterItem>>> GetDeadLetterItems(
+        Guid id,
+        CancellationToken cancellationToken)
+    {
+        var items = await _db.BatchItems
+            .Where(i => i.Batch.JobId == id && i.Status == BatchItemStatus.DeadLetter)
+            .Select(i => new DeadLetterItem(i.Id, i.IdempotencyKey, i.LastError, i.AttemptCount, i.UpdatedAt))
+            .ToListAsync(cancellationToken);
+
+        return Ok(items);
+    }
+
+    [HttpPost("{id:guid}/dead-letter/replay")]
+    public async Task<ActionResult<ReplayResponse>> ReplayDeadLetterItems(
+        Guid id,
+        CancellationToken cancellationToken)
+    {
+        var replayedCount = await _db.BatchItems
+            .Where(i => i.Batch.JobId == id && i.Status == BatchItemStatus.DeadLetter)
+            .ExecuteUpdateAsync(s => s
+                .SetProperty(i => i.Status, BatchItemStatus.Failed)
+                .SetProperty(i => i.NextAttemptAt, DateTime.UtcNow)
+                .SetProperty(i => i.UpdatedAt, DateTime.UtcNow), cancellationToken);
+
+        return Ok(new ReplayResponse(replayedCount));
+    }
+
+    [HttpDelete("{id:guid}/dead-letter")]
+    public async Task<ActionResult<PurgeResponse>> PurgeDeadLetterItems(
+        Guid id,
+        CancellationToken cancellationToken)
+    {
+        var purgedCount = await _db.BatchItems
+            .Where(i => i.Batch.JobId == id && i.Status == BatchItemStatus.DeadLetter)
+            .ExecuteDeleteAsync(cancellationToken);
+
+        return Ok(new PurgeResponse(purgedCount));
     }
 }

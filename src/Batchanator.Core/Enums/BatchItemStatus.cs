@@ -6,5 +6,6 @@ public enum BatchItemStatus
     Processing,
     Succeeded,
     Failed,
-    DeadLetter
+    DeadLetter,
+    Cancelled
 }

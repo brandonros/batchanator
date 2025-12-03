@@ -55,6 +55,7 @@ public class CronSchedulerService : BackgroundService
         // Define scheduled jobs
         _scheduledJobs =
         [
+            // Maintenance jobs
             new ScheduledJob(
                 Name: "StaleJobCleanup",
                 CronExpression: "*/5 * * * *", // Every 5 minutes
@@ -70,10 +71,22 @@ public class CronSchedulerService : BackgroundService
                 CronExpression: "*/2 * * * *", // Every 2 minutes
                 Handler: ReleaseExpiredLocksAsync
             ),
+
+            // Database ingestion jobs (one per job type, each with own lock and schedule)
             new ScheduledJob(
-                Name: "DatabaseIngestion",
+                Name: "DatabaseIngestion-email-notification",
                 CronExpression: "0 * * * *", // Every hour
-                Handler: IngestFromDatabaseAsync
+                Handler: (sp, ct) => IngestJobTypeAsync(sp, "email-notification", ct)
+            ),
+            new ScheduledJob(
+                Name: "DatabaseIngestion-data-sync",
+                CronExpression: "0 * * * *", // Every hour
+                Handler: (sp, ct) => IngestJobTypeAsync(sp, "data-sync", ct)
+            ),
+            new ScheduledJob(
+                Name: "DatabaseIngestion-report-generation",
+                CronExpression: "0 * * * *", // Every hour
+                Handler: (sp, ct) => IngestJobTypeAsync(sp, "report-generation", ct)
             )
         ];
     }
@@ -281,27 +294,17 @@ public class CronSchedulerService : BackgroundService
     }
 
     /// <summary>
-    /// Ingests pending work from the database for all registered job types.
+    /// Ingests pending work from the database for a specific job type.
     /// </summary>
-    private async Task IngestFromDatabaseAsync(IServiceProvider services, CancellationToken ct)
+    private async Task IngestJobTypeAsync(IServiceProvider services, string jobType, CancellationToken ct)
     {
         using var scope = services.CreateScope();
         var ingestionService = scope.ServiceProvider.GetRequiredService<DatabaseIngestionService>();
 
-        foreach (var jobType in JobTypeRegistry.SupportedJobTypes)
+        var jobId = await ingestionService.IngestPendingWorkAsync(jobType, ct);
+        if (jobId != null)
         {
-            try
-            {
-                var jobId = await ingestionService.IngestPendingWorkAsync(jobType, ct);
-                if (jobId != null)
-                {
-                    _logger.LogInformation("Created job {JobId} from database for {JobType}", jobId, jobType);
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Failed to ingest pending work for job type {JobType}", jobType);
-            }
+            _logger.LogInformation("Created job {JobId} from database for {JobType}", jobId, jobType);
         }
     }
 }
